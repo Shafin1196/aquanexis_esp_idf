@@ -3,6 +3,7 @@ idf_component_register(
         "wifi_station.c"
         "ble_test.c"
         "websocket_client.c"
+        "camera_stream.c"
         "ds18b20.c"
         "turbidity.c"
     INCLUDE_DIRS
@@ -17,4 +18,5 @@ idf_component_register(
         esp_hosted
         esp_websocket_client
         esp_driver_gpio
+        esp_video
 )

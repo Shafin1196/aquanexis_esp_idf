@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdbool.h>
+#include <string.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -7,6 +8,7 @@
 #include "esp_log.h"
 #include "esp_websocket_client.h"
 
+#include "camera_stream.h"
 #include "ds18b20.h"
 #include "turbidity.h"
 #include "websocket_client.h"
@@ -21,6 +23,57 @@ static const char *TAG = "AQUANEXIS_WS";
 static esp_websocket_client_handle_t websocket_client = NULL;
 static volatile bool websocket_connected = false;
 
+bool websocket_client_is_connected(void)
+{
+    return websocket_connected;
+}
+
+esp_err_t websocket_client_send_text_payload(const char *payload)
+{
+    if (websocket_client == NULL || !websocket_connected || payload == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    int sent = esp_websocket_client_send_text(
+        websocket_client,
+        payload,
+        strlen(payload),
+        pdMS_TO_TICKS(5000)
+    );
+
+    if (sent < 0) {
+        ESP_LOGE(TAG, "Failed to send text payload");
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
+}
+
+esp_err_t websocket_client_send_binary(const uint8_t *data, size_t length)
+{
+    if (websocket_client == NULL || !websocket_connected) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (data == NULL || length == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    int sent = esp_websocket_client_send_bin(
+        websocket_client,
+        (const char *)data,
+        (int)length,
+        pdMS_TO_TICKS(5000)
+    );
+
+    if (sent < 0) {
+        ESP_LOGE(TAG, "Failed to send binary video frame (%d bytes)", (int)length);
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
+}
+
 static void websocket_event_handler(
     void *handler_args,
     esp_event_base_t base,
@@ -34,6 +87,7 @@ static void websocket_event_handler(
         case WEBSOCKET_EVENT_CONNECTED:
             websocket_connected = true;
             ESP_LOGI(TAG, "WebSocket connected to the server");
+            camera_stream_start();
             break;
 
         case WEBSOCKET_EVENT_DISCONNECTED:
@@ -167,6 +221,8 @@ void websocket_client_start(void)
         5,
         NULL
     );
+
+    ESP_LOGI(TAG, "WebSocket client started; waiting for camera stream start");
 
     ESP_LOGI(TAG, "WebSocket client started");
 }
