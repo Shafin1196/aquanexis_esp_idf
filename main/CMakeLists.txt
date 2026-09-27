@@ -1,0 +1,20 @@
+idf_component_register(
+    SRCS
+        "wifi_station.c"
+        "ble_test.c"
+        "websocket_client.c"
+        "ds18b20.c"
+        "turbidity.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        esp_wifi
+        esp_event
+        esp_netif
+        nvs_flash
+        bt
+        esp_adc
+        esp_hosted
+        esp_websocket_client
+        esp_driver_gpio
+)
