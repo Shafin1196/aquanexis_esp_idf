@@ -63,6 +63,16 @@ static void wifi_clear_button_task(void *arg)
                     esp_err_to_name(result)
                 );
             } else {
+                esp_err_t websocket_clear_result =
+                    websocket_client_clear_url();
+                if (websocket_clear_result != ESP_OK) {
+                    ESP_LOGE(
+                        TAG,
+                        "Failed to clear WebSocket URL: %s",
+                        esp_err_to_name(websocket_clear_result)
+                    );
+                }
+
                 esp_wifi_disconnect();
                 ESP_LOGI(
                     TAG,
@@ -231,6 +241,10 @@ void wifi_station_start(void)
 
         ESP_ERROR_CHECK(
             esp_wifi_restore()
+        );
+
+        ESP_ERROR_CHECK(
+            websocket_client_clear_url()
         );
     }
 
@@ -497,6 +511,16 @@ void app_main(void)
 
 
     ESP_ERROR_CHECK(ret);
+
+    esp_err_t websocket_url_result = websocket_client_load_url();
+    if (websocket_url_result != ESP_OK &&
+        websocket_url_result != ESP_ERR_NOT_FOUND) {
+        ESP_LOGE(
+            TAG,
+            "WebSocket URL restore failed: %s",
+            esp_err_to_name(websocket_url_result)
+        );
+    }
 
 
     /*

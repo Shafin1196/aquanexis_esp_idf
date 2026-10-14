@@ -17,6 +17,7 @@ idf_component_register(
         esp_adc
         esp_hosted
         esp_websocket_client
+        mbedtls
         esp_driver_gpio
         esp_video
 )

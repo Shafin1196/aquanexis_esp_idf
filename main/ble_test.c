@@ -4,6 +4,7 @@
 
 #include "esp_log.h"
 #include "wifi_station.h"
+#include "websocket_client.h"
 
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
@@ -290,12 +291,32 @@ provision_access_cb(
 
     char ssid[33];
     char password[65];
+    char device_websocket_url[256];
 
     if (!json_get_string(buffer, "ssid", ssid, sizeof(ssid)) ||
-        !json_get_string(buffer, "password", password, sizeof(password))) {
+        !json_get_string(buffer, "password", password, sizeof(password)) ||
+        !json_get_string(
+            buffer,
+            "deviceWebSocketUrl",
+            device_websocket_url,
+            sizeof(device_websocket_url)
+        )) {
         ESP_LOGE(
             TAG,
-            "Provisioning JSON requires valid string ssid and password"
+            "Provisioning JSON requires valid ssid, password, and deviceWebSocketUrl strings"
+        );
+
+        return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+    }
+
+    esp_err_t websocket_url_result =
+        websocket_client_set_url(device_websocket_url);
+
+    if (websocket_url_result != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Invalid deviceWebSocketUrl: %s",
+            esp_err_to_name(websocket_url_result)
         );
 
         return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;

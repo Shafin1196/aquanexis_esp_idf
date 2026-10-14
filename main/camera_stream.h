@@ -10,10 +10,10 @@
 extern "C" {
 #endif
 
-#define CAMERA_STREAM_WIDTH  800
-#define CAMERA_STREAM_HEIGHT 800
+#define CAMERA_STREAM_WIDTH  1920
+#define CAMERA_STREAM_HEIGHT 1080
 #define CAMERA_STREAM_FORMAT V4L2_PIX_FMT_JPEG
-#define CAMERA_STREAM_FRAME_INTERVAL_MS 100
+#define CAMERA_STREAM_FRAME_INTERVAL_MS 33
 
 void camera_stream_start(void);
 void camera_stream_stop(void);

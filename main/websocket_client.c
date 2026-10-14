@@ -6,22 +6,166 @@
 #include "freertos/task.h"
 
 #include "esp_log.h"
+#include "esp_crt_bundle.h"
 #include "esp_websocket_client.h"
+#include "nvs.h"
 
 #include "camera_stream.h"
 #include "ds18b20.h"
 #include "turbidity.h"
 #include "websocket_client.h"
 
-#define WEBSOCKET_URL \
-     "ws://192.168.0.113:8000/ws/device/esp_p4_001/?role=producer&key=a4ef63f7-697f-4e65-8fa5-0b7b13fe7a5e"
-
-#define TEMPERATURE_SEND_INTERVAL_MS 5000
+#define SENSOR_SEND_INTERVAL_MS 1000
+#define WEBSOCKET_URL_MAX_LENGTH 255
+#define WEBSOCKET_NVS_NAMESPACE "ws_config"
+#define WEBSOCKET_NVS_KEY "device_ws_url"
 
 static const char *TAG = "AQUANEXIS_WS";
 
 static esp_websocket_client_handle_t websocket_client = NULL;
 static volatile bool websocket_connected = false;
+static char websocket_url[WEBSOCKET_URL_MAX_LENGTH + 1];
+static char active_websocket_url[WEBSOCKET_URL_MAX_LENGTH + 1];
+static TaskHandle_t temperature_task_handle = NULL;
+
+static esp_err_t validate_websocket_url(const char *url, size_t *url_length)
+{
+    if (url == NULL ||
+        (strncmp(url, "ws://", 5) != 0 &&
+         strncmp(url, "wss://", 6) != 0)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    size_t length = strlen(url);
+    if (length == 0 || length > WEBSOCKET_URL_MAX_LENGTH) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    const char *host =
+        strncmp(url, "wss://", 6) == 0 ? url + 6 : url + 5;
+    if (*host == '\0' || *host == '/') {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (url_length != NULL) {
+        *url_length = length;
+    }
+
+    return ESP_OK;
+}
+
+esp_err_t websocket_client_load_url(void)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t result =
+        nvs_open(WEBSOCKET_NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
+
+    if (result == ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGI(TAG, "No saved WebSocket URL; waiting for BLE provisioning");
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open WebSocket settings: %s",
+                 esp_err_to_name(result));
+        return result;
+    }
+
+    size_t url_size = sizeof(websocket_url);
+    result = nvs_get_str(nvs_handle, WEBSOCKET_NVS_KEY, websocket_url, &url_size);
+    nvs_close(nvs_handle);
+
+    if (result == ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGI(TAG, "No saved WebSocket URL; waiting for BLE provisioning");
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (result != ESP_OK) {
+        websocket_url[0] = '\0';
+        ESP_LOGE(TAG, "Failed to read saved WebSocket URL: %s",
+                 esp_err_to_name(result));
+        return result;
+    }
+
+    result = validate_websocket_url(websocket_url, NULL);
+    if (result != ESP_OK) {
+        websocket_url[0] = '\0';
+        ESP_LOGE(TAG, "Saved WebSocket URL is invalid");
+        return result;
+    }
+
+    ESP_LOGI(TAG, "Restored WebSocket URL from NVS");
+    return ESP_OK;
+}
+
+esp_err_t websocket_client_set_url(const char *url)
+{
+    size_t url_length;
+    esp_err_t result = validate_websocket_url(url, &url_length);
+    if (result != ESP_OK) {
+        return result;
+    }
+
+    nvs_handle_t nvs_handle;
+    result = nvs_open(WEBSOCKET_NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open WebSocket settings: %s",
+                 esp_err_to_name(result));
+        return result;
+    }
+
+    result = nvs_set_str(nvs_handle, WEBSOCKET_NVS_KEY, url);
+    if (result == ESP_OK) {
+        result = nvs_commit(nvs_handle);
+    }
+    nvs_close(nvs_handle);
+
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to save WebSocket URL: %s",
+                 esp_err_to_name(result));
+        return result;
+    }
+
+    memcpy(websocket_url, url, url_length + 1);
+    ESP_LOGI(TAG, "Saved WebSocket URL to NVS");
+    return ESP_OK;
+}
+
+esp_err_t websocket_client_clear_url(void)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t result =
+        nvs_open(WEBSOCKET_NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+
+    if (result == ESP_ERR_NVS_NOT_FOUND) {
+        websocket_url[0] = '\0';
+        active_websocket_url[0] = '\0';
+        return ESP_OK;
+    }
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open WebSocket settings: %s",
+                 esp_err_to_name(result));
+        return result;
+    }
+
+    result = nvs_erase_key(nvs_handle, WEBSOCKET_NVS_KEY);
+    if (result == ESP_ERR_NVS_NOT_FOUND) {
+        result = ESP_OK;
+    }
+    if (result == ESP_OK) {
+        result = nvs_commit(nvs_handle);
+    }
+    nvs_close(nvs_handle);
+
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to clear saved WebSocket URL: %s",
+                 esp_err_to_name(result));
+        return result;
+    }
+
+    websocket_url[0] = '\0';
+    active_websocket_url[0] = '\0';
+    ESP_LOGI(TAG, "Cleared saved WebSocket URL");
+    return ESP_OK;
+}
 
 bool websocket_client_is_connected(void)
 {
@@ -138,15 +282,36 @@ static void websocket_temperature_task(void *arg)
             }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(TEMPERATURE_SEND_INTERVAL_MS));
+        vTaskDelay(pdMS_TO_TICKS(SENSOR_SEND_INTERVAL_MS));
     }
 }
 
 void websocket_client_start(void)
 {
-    if (websocket_client != NULL) {
+    if (websocket_url[0] == '\0') {
+        ESP_LOGE(TAG, "WebSocket URL has not been provided");
+        return;
+    }
+
+    if (websocket_client != NULL &&
+        strcmp(active_websocket_url, websocket_url) == 0) {
         ESP_LOGW(TAG, "WebSocket client is already initialized");
         return;
+    }
+
+    if (websocket_client != NULL) {
+        esp_err_t stop_result = esp_websocket_client_stop(websocket_client);
+        if (stop_result != ESP_OK) {
+            ESP_LOGW(
+                TAG,
+                "Failed to stop previous WebSocket client: %s",
+                esp_err_to_name(stop_result)
+            );
+        }
+
+        esp_websocket_client_destroy(websocket_client);
+        websocket_client = NULL;
+        websocket_connected = false;
     }
 
     esp_err_t sensor_result = ds18b20_init();
@@ -169,7 +334,8 @@ void websocket_client_start(void)
     }
 
     esp_websocket_client_config_t config = {
-        .uri = WEBSOCKET_URL,
+        .uri = websocket_url,
+        .crt_bundle_attach = esp_crt_bundle_attach,
         .disable_auto_reconnect = false,
         .network_timeout_ms = 10000,
     };
@@ -180,6 +346,7 @@ void websocket_client_start(void)
         ESP_LOGE(TAG, "Failed to initialize WebSocket client");
         return;
     }
+    memcpy(active_websocket_url, websocket_url, strlen(websocket_url) + 1);
 
     esp_err_t result =
         esp_websocket_register_events(
@@ -213,14 +380,21 @@ void websocket_client_start(void)
         return;
     }
 
-    xTaskCreate(
-        websocket_temperature_task,
-        "websocket_temperature",
-        4096,
-        NULL,
-        5,
-        NULL
-    );
+    if (temperature_task_handle == NULL) {
+        BaseType_t task_result = xTaskCreate(
+            websocket_temperature_task,
+            "websocket_temperature",
+            4096,
+            NULL,
+            5,
+            &temperature_task_handle
+        );
+
+        if (task_result != pdPASS) {
+            temperature_task_handle = NULL;
+            ESP_LOGE(TAG, "Failed to create WebSocket temperature task");
+        }
+    }
 
     ESP_LOGI(TAG, "WebSocket client started; waiting for camera stream start");
 

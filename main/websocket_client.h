@@ -9,6 +9,9 @@
 #include "turbidity.h"
 
 void websocket_client_start(void);
+esp_err_t websocket_client_load_url(void);
+esp_err_t websocket_client_set_url(const char *url);
+esp_err_t websocket_client_clear_url(void);
 bool websocket_client_is_connected(void);
 esp_err_t websocket_client_send_text_payload(const char *payload);
 esp_err_t websocket_client_send_binary(const uint8_t *data, size_t length);

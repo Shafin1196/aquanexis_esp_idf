@@ -11,11 +11,13 @@
 #include <unistd.h>
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
 
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "esp_video_init.h"
 
 #include "linux/videodev2.h"
@@ -25,15 +27,28 @@
 #include "websocket_client.h"
 
 #define CAMERA_STREAM_BUFFER_COUNT 2
-#define CAMERA_STREAM_JPEG_QUALITY 60
-#define CAMERA_STREAM_SEND_INTERVAL_MS 100
-#define CAMERA_STREAM_CAPTURE_FORMAT V4L2_PIX_FMT_UYVY
+#define CAMERA_STREAM_JPEG_QUALITY 15
+#define CAMERA_STREAM_CAPTURE_FORMAT V4L2_PIX_FMT_RGB565
+#define CAMERA_SENDER_TASK_STACK_SIZE 6144
 
 static const char *TAG = "AQUANEXIS_CAM";
 
 static volatile bool g_camera_stream_running = false;
 static bool g_stream_started = false;
 static bool g_video_stack_initialized = false;
+
+typedef struct {
+    bool stop;
+    uint8_t slot;
+    size_t size;
+} camera_send_item_t;
+
+typedef struct {
+    QueueHandle_t send_queue;
+    QueueHandle_t free_slots;
+    uint8_t *buffers[CAMERA_STREAM_BUFFER_COUNT];
+    TaskHandle_t owner_task;
+} camera_sender_context_t;
 
 #define CAMERA_SCCB_PORT         (1)
 #define CAMERA_SCCB_FREQ_HZ      (100000)
@@ -138,14 +153,14 @@ static esp_err_t camera_setup_capture_device(int fd)
         ESP_LOGE(TAG, "VIDIOC_S_FMT failed: %s", strerror(errno));
         return ESP_FAIL;
     }
-    ESP_LOGI(TAG, "CSI capture format: %ux%u, UYVY", format.fmt.pix.width, format.fmt.pix.height);
+    ESP_LOGI(TAG, "CSI capture format: %ux%u, RGB565", format.fmt.pix.width, format.fmt.pix.height);
 
     parm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     if (ioctl(fd, VIDIOC_G_PARM, &parm) == 0) {
         parm.parm.capture.timeperframe.numerator = 1;
-        parm.parm.capture.timeperframe.denominator = 50;
+        parm.parm.capture.timeperframe.denominator = 30;
         if (ioctl(fd, VIDIOC_S_PARM, &parm) != 0) {
-            ESP_LOGW(TAG, "VIDIOC_S_PARM failed; continuing with default FPS");
+            ESP_LOGW(TAG, "Unable to request 30 FPS; continuing with sensor default");
         }
     }
 
@@ -175,6 +190,64 @@ static esp_err_t camera_stop_capture(int fd)
     return ESP_OK;
 }
 
+static void camera_sender_task(void *arg)
+{
+    camera_sender_context_t *context = arg;
+    camera_send_item_t item = {0};
+    uint32_t frames_sent = 0;
+    uint64_t bytes_sent = 0;
+    uint64_t send_time_us = 0;
+    int64_t stats_start_us = esp_timer_get_time();
+
+    while (xQueueReceive(context->send_queue, &item, portMAX_DELAY) == pdPASS) {
+        if (item.stop) {
+            break;
+        }
+
+        int64_t send_start_us = esp_timer_get_time();
+        char header[128];
+        int header_len = snprintf(
+            header,
+            sizeof(header),
+            "{\"type\":\"camera\",\"codec\":\"jpeg\",\"width\":%d,\"height\":%d,\"size\":%lu}",
+            CAMERA_STREAM_WIDTH,
+            CAMERA_STREAM_HEIGHT,
+            (unsigned long)item.size
+        );
+        esp_err_t send_result = ESP_FAIL;
+        if (header_len > 0 && header_len < (int)sizeof(header)) {
+            send_result = websocket_client_send_text_payload(header);
+            if (send_result == ESP_OK) {
+                send_result = websocket_client_send_binary(context->buffers[item.slot], item.size);
+            }
+        }
+
+        send_time_us += (uint64_t)(esp_timer_get_time() - send_start_us);
+        if (send_result == ESP_OK) {
+            frames_sent++;
+            bytes_sent += item.size;
+        }
+        xQueueSend(context->free_slots, &item.slot, portMAX_DELAY);
+
+        int64_t now_us = esp_timer_get_time();
+        if (now_us - stats_start_us >= 5000000) {
+            uint32_t elapsed_us = (uint32_t)(now_us - stats_start_us);
+            uint32_t fps = elapsed_us ? (uint32_t)((uint64_t)frames_sent * 1000000 / elapsed_us) : 0;
+            uint32_t average_send_ms = frames_sent ? (uint32_t)(send_time_us / frames_sent / 1000) : 0;
+            uint32_t average_frame_kb = frames_sent ? (uint32_t)(bytes_sent / frames_sent / 1024) : 0;
+            ESP_LOGI(TAG, "WebSocket video: %u FPS, avg frame %u KB, avg send %u ms",
+                     fps, average_frame_kb, average_send_ms);
+            frames_sent = 0;
+            bytes_sent = 0;
+            send_time_us = 0;
+            stats_start_us = now_us;
+        }
+    }
+
+    xTaskNotifyGive(context->owner_task);
+    vTaskDelete(NULL);
+}
+
 static void camera_stream_task(void *arg)
 {
     int camera_fd = -1;
@@ -186,6 +259,10 @@ static void camera_stream_task(void *arg)
     size_t camera_buffer_lengths[CAMERA_STREAM_BUFFER_COUNT] = {0};
     uint8_t *jpeg_buffers[CAMERA_STREAM_BUFFER_COUNT] = {0};
     size_t jpeg_buffer_lengths[CAMERA_STREAM_BUFFER_COUNT] = {0};
+    camera_sender_context_t sender_context = {0};
+    bool sender_task_started = false;
+    enum v4l2_buf_type encoder_capture_type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    enum v4l2_buf_type encoder_output_type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
     int64_t last_send_time = 0;
 
     if (camera_init_video_stack() != ESP_OK) {
@@ -321,14 +398,35 @@ static void camera_stream_task(void *arg)
         }
     }
 
-    enum v4l2_buf_type encoder_capture_type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    sender_context.send_queue = xQueueCreate(1, sizeof(camera_send_item_t));
+    sender_context.free_slots = xQueueCreate(CAMERA_STREAM_BUFFER_COUNT, sizeof(uint8_t));
+    sender_context.owner_task = xTaskGetCurrentTaskHandle();
+    if (sender_context.send_queue == NULL || sender_context.free_slots == NULL) {
+        ESP_LOGE(TAG, "Unable to allocate video sender queues");
+        goto cleanup;
+    }
+    for (uint8_t index = 0; index < CAMERA_STREAM_BUFFER_COUNT; index++) {
+        sender_context.buffers[index] = heap_caps_malloc(
+            jpeg_buffer_lengths[index], MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (sender_context.buffers[index] == NULL ||
+                xQueueSend(sender_context.free_slots, &index, 0) != pdPASS) {
+            ESP_LOGE(TAG, "Unable to allocate video sender frame slot %u", index);
+            goto cleanup;
+        }
+    }
+    if (xTaskCreate(camera_sender_task, "camera_sender_task", CAMERA_SENDER_TASK_STACK_SIZE,
+                    &sender_context, 4, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "Unable to start video sender task");
+        goto cleanup;
+    }
+    sender_task_started = true;
+
     if (ioctl(encoder_fd, VIDIOC_STREAMON, &encoder_capture_type) != 0) {
         ESP_LOGE(TAG, "JPEG encoder capture STREAMON failed: %s", strerror(errno));
         goto cleanup;
     }
     encoder_capture_streaming = true;
 
-    enum v4l2_buf_type encoder_output_type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
     if (ioctl(encoder_fd, VIDIOC_STREAMON, &encoder_output_type) != 0) {
         ESP_LOGE(TAG, "JPEG encoder output STREAMON failed: %s", strerror(errno));
         goto cleanup;
@@ -388,21 +486,20 @@ static void camera_stream_task(void *arg)
             int64_t now = esp_timer_get_time();
             if (jpeg_buf.index < CAMERA_STREAM_BUFFER_COUNT &&
                     jpeg_buf.bytesused > 0 && jpeg_buf.bytesused <= jpeg_buffer_lengths[jpeg_buf.index] &&
-                    (now - last_send_time) >= CAMERA_STREAM_SEND_INTERVAL_MS * 1000LL &&
+                    (now - last_send_time) >= CAMERA_STREAM_FRAME_INTERVAL_MS * 1000LL &&
                     websocket_client_is_connected()) {
-                last_send_time = now;
-                char header[128];
-                int header_len = snprintf(
-                    header,
-                    sizeof(header),
-                    "{\"type\":\"camera\",\"codec\":\"jpeg\",\"width\":%d,\"height\":%d,\"size\":%lu}",
-                    CAMERA_STREAM_WIDTH,
-                    CAMERA_STREAM_HEIGHT,
-                    (unsigned long)jpeg_buf.bytesused
-                );
-                if (header_len > 0 && header_len < (int)sizeof(header)) {
-                    websocket_client_send_text_payload(header);
-                    websocket_client_send_binary(jpeg_buffers[jpeg_buf.index], jpeg_buf.bytesused);
+                uint8_t slot = 0;
+                if (xQueueReceive(sender_context.free_slots, &slot, 0) == pdPASS) {
+                    memcpy(sender_context.buffers[slot], jpeg_buffers[jpeg_buf.index], jpeg_buf.bytesused);
+                    camera_send_item_t send_item = {
+                        .slot = slot,
+                        .size = jpeg_buf.bytesused,
+                    };
+                    if (xQueueSend(sender_context.send_queue, &send_item, 0) == pdPASS) {
+                        last_send_time = now;
+                    } else {
+                        xQueueSend(sender_context.free_slots, &slot, 0);
+                    }
                 }
             }
 
@@ -410,15 +507,21 @@ static void camera_stream_task(void *arg)
                 ESP_LOGE(TAG, "JPEG encoder output requeue failed: %s", strerror(errno));
                 break;
             }
-        }
 
-        if (ioctl(camera_fd, VIDIOC_QBUF, &camera_buf) != 0) {
-            ESP_LOGE(TAG, "Camera buffer requeue failed: %s", strerror(errno));
-            break;
+            if (ioctl(camera_fd, VIDIOC_QBUF, &camera_buf) != 0) {
+                ESP_LOGE(TAG, "Camera buffer requeue failed: %s", strerror(errno));
+                break;
+            }
         }
     }
 
 cleanup:
+    if (sender_task_started) {
+        camera_send_item_t stop_item = {.stop = true};
+        if (xQueueSend(sender_context.send_queue, &stop_item, portMAX_DELAY) == pdPASS) {
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        }
+    }
     if (camera_streaming) {
         camera_stop_capture(camera_fd);
     }
@@ -435,6 +538,15 @@ cleanup:
         if (jpeg_buffers[index] != NULL) {
             munmap(jpeg_buffers[index], jpeg_buffer_lengths[index]);
         }
+        if (sender_context.buffers[index] != NULL) {
+            heap_caps_free(sender_context.buffers[index]);
+        }
+    }
+    if (sender_context.send_queue != NULL) {
+        vQueueDelete(sender_context.send_queue);
+    }
+    if (sender_context.free_slots != NULL) {
+        vQueueDelete(sender_context.free_slots);
     }
     if (encoder_fd >= 0) {
         close(encoder_fd);
