@@ -18,7 +18,8 @@ esp_err_t websocket_client_send_binary(const uint8_t *data, size_t length);
 esp_err_t websocket_client_send_temperature(float temperature);
 esp_err_t websocket_client_send_turbidity(
 	float temperature,
-	const turbidity_sample_t *sample
+	const turbidity_sample_t *sample,
+	const float *weight_grams
 );
 
 #endif

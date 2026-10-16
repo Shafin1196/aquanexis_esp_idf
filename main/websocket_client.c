@@ -12,10 +12,13 @@
 
 #include "camera_stream.h"
 #include "ds18b20.h"
+#include "hx711.h"
 #include "turbidity.h"
 #include "websocket_client.h"
 
 #define SENSOR_SEND_INTERVAL_MS 1000
+#define HX711_TARE_SAMPLES 20
+#define HX711_WEIGHT_SAMPLES 10
 #define WEBSOCKET_URL_MAX_LENGTH 255
 #define WEBSOCKET_NVS_NAMESPACE "ws_config"
 #define WEBSOCKET_NVS_KEY "device_ws_url"
@@ -27,6 +30,7 @@ static volatile bool websocket_connected = false;
 static char websocket_url[WEBSOCKET_URL_MAX_LENGTH + 1];
 static char active_websocket_url[WEBSOCKET_URL_MAX_LENGTH + 1];
 static TaskHandle_t temperature_task_handle = NULL;
+static bool hx711_available = false;
 
 static esp_err_t validate_websocket_url(const char *url, size_t *url_length)
 {
@@ -261,6 +265,7 @@ static void websocket_event_handler(
 static void websocket_temperature_task(void *arg)
 {
     float temperature;
+    float weight_grams;
     turbidity_sample_t turbidity;
 
     while (true) {
@@ -269,15 +274,34 @@ static void websocket_temperature_task(void *arg)
                 ds18b20_read_temperature(&temperature);
 
             esp_err_t turbidity_result = turbidity_read(&turbidity);
+            esp_err_t weight_result = ESP_ERR_INVALID_STATE;
+            if (hx711_available) {
+                weight_result = hx711_read_weight(
+                    &weight_grams,
+                    HX711_WEIGHT_SAMPLES
+                );
+            }
 
             if (result == ESP_OK && turbidity_result == ESP_OK) {
-                websocket_client_send_turbidity(temperature, &turbidity);
+                websocket_client_send_turbidity(
+                    temperature,
+                    &turbidity,
+                    weight_result == ESP_OK ? &weight_grams : NULL
+                );
             } else {
                 ESP_LOGE(
                     TAG,
                     "Sensor read failed: temperature=%s turbidity=%s",
                     esp_err_to_name(result),
                     esp_err_to_name(turbidity_result)
+                );
+            }
+
+            if (weight_result != ESP_OK && hx711_available) {
+                ESP_LOGE(
+                    TAG,
+                    "HX711 read failed: %s",
+                    esp_err_to_name(weight_result)
                 );
             }
         }
@@ -331,6 +355,26 @@ void websocket_client_start(void)
             "Turbidity sensor ADC initialization failed: %s",
             esp_err_to_name(sensor_result)
         );
+    }
+
+    sensor_result = hx711_init();
+    if (sensor_result != ESP_OK) {
+        hx711_available = false;
+        ESP_LOGE(
+            TAG,
+            "HX711 initialization failed on DOUT GPIO6/SCK GPIO5: %s",
+            esp_err_to_name(sensor_result)
+        );
+    } else {
+        sensor_result = hx711_tare(HX711_TARE_SAMPLES);
+        hx711_available = sensor_result == ESP_OK;
+        if (sensor_result != ESP_OK) {
+            ESP_LOGE(
+                TAG,
+                "HX711 tare failed; weight will be omitted: %s",
+                esp_err_to_name(sensor_result)
+            );
+        }
     }
 
     esp_websocket_client_config_t config = {
@@ -440,7 +484,8 @@ esp_err_t websocket_client_send_temperature(float temperature)
 
 esp_err_t websocket_client_send_turbidity(
     float temperature,
-    const turbidity_sample_t *sample
+    const turbidity_sample_t *sample,
+    const float *weight_grams
 )
 {
     if (sample == NULL) {
@@ -451,15 +496,28 @@ esp_err_t websocket_client_send_turbidity(
         return ESP_ERR_INVALID_STATE;
     }
 
-    char payload[128];
-    int payload_length = snprintf(
-        payload,
-        sizeof(payload),
-        "{\"temperature\":%.2f,\"turbidity_raw\":%d,\"turbidity_voltage\":%.3f}",
-        temperature,
-        sample->raw,
-        sample->sensor_voltage
-    );
+    char payload[160];
+    int payload_length;
+    if (weight_grams != NULL) {
+        payload_length = snprintf(
+            payload,
+            sizeof(payload),
+            "{\"temperature\":%.2f,\"turbidity_raw\":%d,\"turbidity_voltage\":%.3f,\"weight_grams\":%.2f}",
+            temperature,
+            sample->raw,
+            sample->sensor_voltage,
+            *weight_grams
+        );
+    } else {
+        payload_length = snprintf(
+            payload,
+            sizeof(payload),
+            "{\"temperature\":%.2f,\"turbidity_raw\":%d,\"turbidity_voltage\":%.3f}",
+            temperature,
+            sample->raw,
+            sample->sensor_voltage
+        );
+    }
 
     if (payload_length < 0 || payload_length >= (int)sizeof(payload)) {
         return ESP_ERR_INVALID_SIZE;
@@ -477,12 +535,23 @@ esp_err_t websocket_client_send_turbidity(
         return ESP_FAIL;
     }
 
-    ESP_LOGI(
-        TAG,
-        "Sensors sent: %.2f C, turbidity AO %.3f V (raw %d)",
-        temperature,
-        sample->sensor_voltage,
-        sample->raw
-    );
+    if (weight_grams != NULL) {
+        ESP_LOGI(
+            TAG,
+            "Sensors sent: %.2f C, turbidity AO %.3f V (raw %d), weight %.2f g",
+            temperature,
+            sample->sensor_voltage,
+            sample->raw,
+            *weight_grams
+        );
+    } else {
+        ESP_LOGI(
+            TAG,
+            "Sensors sent: %.2f C, turbidity AO %.3f V (raw %d), weight omitted",
+            temperature,
+            sample->sensor_voltage,
+            sample->raw
+        );
+    }
     return ESP_OK;
 }

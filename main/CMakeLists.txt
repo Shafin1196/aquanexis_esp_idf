@@ -6,6 +6,7 @@ idf_component_register(
         "camera_stream.c"
         "ds18b20.c"
         "turbidity.c"
+        "hx711.c"
     INCLUDE_DIRS
         "."
     REQUIRES
