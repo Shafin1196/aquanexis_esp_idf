@@ -73,7 +73,7 @@ If you need to revert to the old 1280×960 configuration:
 
 ```bash
 # Restore from backup or reset to previous commit:
-git checkout HEAD -- main/camera_stream.h main/camera_stream.c sdkconfig sdkconfig.defaults
+git checkout HEAD -- main/camera/camera_stream.h main/camera/camera_stream.c sdkconfig sdkconfig.defaults
 idf.py clean
 idf.py build
 ```

@@ -11,7 +11,7 @@ Successfully configured the OV5647 camera to stream at **1920×1080@30 FPS** ins
 
 ## Configuration Changes
 
-### 1. Camera Resolution & Frame Interval (`camera_stream.h`)
+### 1. Camera Resolution & Frame Interval (`main/camera/camera_stream.h`)
 ```c
 #define CAMERA_STREAM_WIDTH  1920        // was 1280
 #define CAMERA_STREAM_HEIGHT 1080        // was 960
@@ -19,7 +19,7 @@ Successfully configured the OV5647 camera to stream at **1920×1080@30 FPS** ins
 ```
 **Rationale:** Switches to the OV5647's native 1920×1080@30 FPS mode for higher quality streaming.
 
-### 2. FPS Request & Send Throttle (`camera_stream.c`)
+### 2. FPS Request & Send Throttle (`main/camera/camera_stream.c`)
 **Line 163:** FPS request changed from 15 to 30
 ```c
 parm.parm.capture.timeperframe.denominator = 30;  // was 15
@@ -75,8 +75,8 @@ The 1920×1080@30 FPS mode provides **higher resolution** than the previous 1280
 
 | File | Changes |
 |------|---------|
-| `main/camera_stream.h` | Resolution 1920×1080, frame interval 33 ms |
-| `main/camera_stream.c` | FPS request 30, send throttle using frame interval |
+| `main/camera/camera_stream.h` | Resolution 1920×1080, frame interval 33 ms |
+| `main/camera/camera_stream.c` | FPS request 30, send throttle using frame interval |
 | `sdkconfig` | Format index 3 (1920×1080@30), enabled RAW10 mode |
 | `sdkconfig.defaults` | Added OV5647 default format configuration |
 

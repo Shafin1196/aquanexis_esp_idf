@@ -63,11 +63,11 @@ Your Aquanexis WiFi camera system has been **successfully configured to stream a
 
 | Component | Old Value | New Value | File |
 |-----------|-----------|-----------|------|
-| Resolution | 1280×960 | 1920×1080 | `camera_stream.h` |
+| Resolution | 1280×960 | 1920×1080 | `main/camera/camera_stream.h` |
 | Native FPS | 45 FPS | 30 FPS | (driver) |
-| FPS Request | 15 FPS | 30 FPS | `camera_stream.c:163` |
-| Frame Interval | 100 ms | 33 ms | `camera_stream.h` |
-| Throttle Logic | Hardcoded | Use frame interval | `camera_stream.c:490` |
+| FPS Request | 15 FPS | 30 FPS | `main/camera/camera_stream.c:163` |
+| Frame Interval | 100 ms | 33 ms | `main/camera/camera_stream.h` |
+| Throttle Logic | Hardcoded | Use frame interval | `main/camera/camera_stream.c:490` |
 | SDK Config | Index 4 (or default) | Index 3 | `sdkconfig` |
 
 ---
@@ -95,8 +95,9 @@ If you need higher delivered FPS:
 ```
 D:\aquanexis_wifi_test\
 ├── main/
-│   ├── camera_stream.h          (Resolution & frame interval constants)
-│   └── camera_stream.c          (FPS request & send throttle logic)
+│   └── camera/
+│       ├── camera_stream.h      (Resolution & frame interval constants)
+│       └── camera_stream.c      (FPS request & send throttle logic)
 ├── sdkconfig                     (Sensor mode selection & default format)
 ├── sdkconfig.defaults            (Reset template with OV5647 defaults)
 └── build/
@@ -141,14 +142,14 @@ To revert to the old 1280×960 configuration:
 
 ```bash
 # Option 1: Restore from git
-git checkout HEAD -- main/camera_stream.h main/camera_stream.c sdkconfig sdkconfig.defaults
+git checkout HEAD -- main/camera/camera_stream.h main/camera/camera_stream.c sdkconfig sdkconfig.defaults
 
 # Option 2: Manual revert
-# Edit camera_stream.h:
+# Edit main/camera/camera_stream.h:
 #   - CAMERA_STREAM_WIDTH = 1280
 #   - CAMERA_STREAM_HEIGHT = 960
 #   - CAMERA_STREAM_FRAME_INTERVAL_MS = 100
-# Edit camera_stream.c line 163:
+# Edit main/camera/camera_stream.c line 163:
 #   - denominator = 15
 # Edit sdkconfig:
 #   - CONFIG_CAMERA_OV5647_MIPI_IF_FORMAT_INDEX_DEFAULT = 4

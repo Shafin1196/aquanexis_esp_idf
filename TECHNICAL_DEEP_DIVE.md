@@ -54,7 +54,7 @@ CONFIG_CAMERA_OV5647_MIPI_IF_FORMAT_INDEX_DEFAULT=3    # Format index 3 = 1920×
 
 Actually, let me clarify: the index points to which resolution mode is active. In Kconfig, the format definition ties resolution to index. The configuration selects which mode boots by default.
 
-#### 2. Frame Rate Request (camera_stream.c)
+#### 2. Frame Rate Request (main/camera/camera_stream.c)
 ```c
 // Line 163
 parm.parm.capture.timeperframe.numerator = 1;
@@ -63,7 +63,7 @@ parm.parm.capture.timeperframe.denominator = 30;  // Request 30 FPS
 
 This creates the V4L2 timeperframe structure: `numerator/denominator = 1/30 seconds per frame`.
 
-#### 3. Frame Send Throttle (camera_stream.c)
+#### 3. Frame Send Throttle (main/camera/camera_stream.c)
 ```c
 // Line 490 - Throttles WebSocket sends to match frame interval
 int64_t now = esp_timer_get_time();
@@ -77,7 +77,7 @@ With `CAMERA_STREAM_FRAME_INTERVAL_MS = 33` ms:
 - 33 ms × 1000 = 33,000 microseconds
 - 1,000,000 µs ÷ 33,000 µs ≈ 30.3 FPS throttle
 
-#### 4. Application-Level Constants (camera_stream.h)
+#### 4. Application-Level Constants (main/camera/camera_stream.h)
 ```c
 #define CAMERA_STREAM_WIDTH  1920
 #define CAMERA_STREAM_HEIGHT 1080
@@ -196,8 +196,8 @@ The OV5647 sensor can theoretically capture 2592×1944 (5 MP), but:
 |------|---------|--------|
 | `sdkconfig` | Compile-time configuration | Enable 1920×1080 mode, set as default |
 | `sdkconfig.defaults` | Reset template | Add 1920×1080 defaults for clean builds |
-| `camera_stream.h` | Constants for main.c/app | Resolution + frame interval |
-| `camera_stream.c` | Core driver logic | FPS request + send throttle |
+| `main/camera/camera_stream.h` | Camera constants | Resolution + frame interval |
+| `main/camera/camera_stream.c` | Core driver logic | FPS request + send throttle |
 | `esp_cam_sensor/ov5647.c` | Espressif driver (not modified) | Defines available sensor modes |
 
 ---

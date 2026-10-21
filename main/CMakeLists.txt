@@ -1,14 +1,20 @@
 idf_component_register(
     SRCS
-        "wifi_station.c"
-        "ble_test.c"
-        "websocket_client.c"
-        "camera_stream.c"
-        "ds18b20.c"
-        "turbidity.c"
-        "hx711.c"
+        "app/app_main.c"
+        "wifi/wifi_station.c"
+        "ble/ble_test.c"
+        "websocket/websocket_client.c"
+        "camera/camera_stream.c"
+        "sensor/ds18b20.c"
+        "sensor/turbidity.c"
+        "sensor/hx711.c"
     INCLUDE_DIRS
-        "."
+        "app"
+        "wifi"
+        "ble"
+        "websocket"
+        "camera"
+        "sensor"
     REQUIRES
         esp_wifi
         esp_event

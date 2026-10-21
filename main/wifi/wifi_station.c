@@ -11,10 +11,8 @@
 #include "esp_netif.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
-#include "nvs_flash.h"
 
 #include "wifi_station.h"
-#include "ble_test.h"
 #include "websocket_client.h"
 
 #define WIFI_CONNECTED_BIT BIT0
@@ -464,111 +462,4 @@ bool wifi_station_is_connected(void)
     return (
         bits & WIFI_CONNECTED_BIT
     ) != 0;
-}
-
-
-/*
- * Application entry point.
- */
-void app_main(void)
-{
-    ESP_LOGI(
-        TAG,
-        "================================"
-    );
-
-    ESP_LOGI(
-        TAG,
-        " AquaNexis Wi-Fi Test"
-    );
-
-    ESP_LOGI(
-        TAG,
-        " ESP32-P4 + ESP32-C6"
-    );
-
-    ESP_LOGI(
-        TAG,
-        "================================"
-    );
-
-
-    /*
-     * Initialize NVS.
-     */
-    esp_err_t ret = nvs_flash_init();
-
-
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
-        ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-
-        ESP_ERROR_CHECK(
-            nvs_flash_erase()
-        );
-
-        ret = nvs_flash_init();
-    }
-
-
-    ESP_ERROR_CHECK(ret);
-
-    esp_err_t websocket_url_result = websocket_client_load_url();
-    if (websocket_url_result != ESP_OK &&
-        websocket_url_result != ESP_ERR_NOT_FOUND) {
-        ESP_LOGE(
-            TAG,
-            "WebSocket URL restore failed: %s",
-            esp_err_to_name(websocket_url_result)
-        );
-    }
-
-
-    /*
-     * Start Wi-Fi subsystem.
-     *
-     * Do NOT connect yet.
-     * Credentials will come from BLE.
-     */
-    wifi_station_start();
-
-
-    /*
-     * Start BLE provisioning.
-     */
-    ble_test_start();
-
-
-    ESP_LOGI(
-        TAG,
-        "================================"
-    );
-
-    ESP_LOGI(
-        TAG,
-        "AquaNexis is ready for setup"
-    );
-
-    ESP_LOGI(
-        TAG,
-        "Waiting for Wi-Fi credentials over BLE..."
-    );
-
-    ESP_LOGI(
-        TAG,
-        "================================"
-    );
-
-
-    /*
-     * Main task stays alive.
-     *
-     * BLE and Wi-Fi event handlers work
-     * asynchronously in their own tasks.
-     */
-    while (1) {
-
-        vTaskDelay(
-            pdMS_TO_TICKS(1000)
-        );
-    }
 }

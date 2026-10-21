@@ -27,7 +27,7 @@ I (12134) AQUANEXIS_WS: WebSocket connected to the server
 |-------|-------|-----|
 | `CSI capture format: 1280x960` | Old resolution active | Clear build, rebuild with `idf.py clean` |
 | `denominator=20 is invalid` | FPS divisor mismatch | Verify `sdkconfig` has `CONFIG_CAMERA_OV5647_MIPI_IF_FORMAT_INDEX_DEFAULT=3` |
-| `VIDIOC_S_PARM failed` | FPS request invalid for mode | Check camera_stream.c line 163 is `denominator = 30` |
+| `VIDIOC_S_PARM failed` | FPS request invalid for mode | Check `main/camera/camera_stream.c` line 163 is `denominator = 30` |
 | Camera not detected | Missing esp_cam_sensor | Verify `CONFIG_CAMERA_OV5647=y` in sdkconfig |
 
 ## Runtime Performance Monitoring
@@ -56,7 +56,7 @@ I (27284) AQUANEXIS_CAM: WebSocket video: X FPS, avg frame Y KB, avg send Z ms
 
 **Options to Improve:**
 1. **Reduce JPEG quality** (trade: visual quality)
-   - Modify `camera_stream.c` line 331: reduce `CAMERA_STREAM_JPEG_QUALITY` (currently 15)
+   - Modify `main/camera/camera_stream.c` line 331: reduce `CAMERA_STREAM_JPEG_QUALITY` (currently 15)
    - Smaller frames = higher FPS delivery
 
 2. **Reduce resolution** (trade: image detail)
@@ -82,12 +82,12 @@ idf.py monitor
 
 | Setting | File | Line(s) |
 |---------|------|---------|
-| Resolution (1920×1080) | `camera_stream.h` | 13–14 |
-| Frame interval (33 ms) | `camera_stream.h` | 16 |
-| FPS request (30) | `camera_stream.c` | 163 |
-| Send throttle logic | `camera_stream.c` | 490 |
+| Resolution (1920×1080) | `main/camera/camera_stream.h` | 13–14 |
+| Frame interval (33 ms) | `main/camera/camera_stream.h` | 16 |
+| FPS request (30) | `main/camera/camera_stream.c` | 163 |
+| Send throttle logic | `main/camera/camera_stream.c` | 490 |
 | Default format | `sdkconfig` | 4292–4298 |
-| JPEG quality | `camera_stream.c` | 331 |
+| JPEG quality | `main/camera/camera_stream.c` | 331 |
 
 ---
 
