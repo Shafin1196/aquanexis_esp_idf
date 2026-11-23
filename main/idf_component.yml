@@ -12,4 +12,3 @@ dependencies:
       - if: "target in [esp32p4, esp32h2]"
   espressif/esp_video:
     version: "2.5.*"
-    override_path: "C:/esp/esp-video-components/esp_video"

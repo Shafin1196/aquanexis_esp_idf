@@ -22,8 +22,8 @@
   "idf.openOcdConfigs": [
     "board/esp32p4-builtin.cfg"
   ],
-  "idf.port": "COM5",
-  "idf.currentSetup": "C:\\esp\\v6.1\\esp-idf",
+  "idf.port": "COM3",
+  "idf.currentSetup": "C:\\esp\\v6.1.1\\esp-idf",
   "idf.customExtraVars": {
     "IDF_TARGET": "esp32p4"
   },
@@ -31,7 +31,7 @@
   "clangd.arguments": [
     "--background-index",
     "--query-driver=**",
-    "--compile-commands-dir=d:\\aquanexis_wifi_test\\build"
+    "--compile-commands-dir=C:\\Users\\user\\aquanexis\\aquanexis_esp_idf\\build"
   ],
   "idf.flashType": "UART"
 }

@@ -54,7 +54,11 @@ void app_main(void)
     }
 
     wifi_station_start();
+#if CONFIG_BT_ENABLED
     ble_test_start();
+#else
+    ESP_LOGI(TAG, "Local BLE is unavailable on this ESP32-P4 configuration");
+#endif
 
     ESP_LOGI(
         TAG,

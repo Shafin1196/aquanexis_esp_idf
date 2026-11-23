@@ -2,4 +2,3 @@ dependencies:
   idf: ">=5.4"
   espressif/esp_video:
     version: "2.5.*"
-    override_path: C:/esp/esp-video-components/esp_video

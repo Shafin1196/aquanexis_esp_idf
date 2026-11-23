@@ -158,9 +158,9 @@ static esp_err_t camera_setup_capture_device(int fd)
     parm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     if (ioctl(fd, VIDIOC_G_PARM, &parm) == 0) {
         parm.parm.capture.timeperframe.numerator = 1;
-        parm.parm.capture.timeperframe.denominator = 30;
+        parm.parm.capture.timeperframe.denominator = 15;
         if (ioctl(fd, VIDIOC_S_PARM, &parm) != 0) {
-            ESP_LOGW(TAG, "Unable to request 30 FPS; continuing with sensor default");
+            ESP_LOGW(TAG, "Unable to request 15 FPS; continuing with sensor default");
         }
     }
 
