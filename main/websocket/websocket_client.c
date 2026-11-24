@@ -1,8 +1,12 @@
 #include <stdio.h>
 #include <stdbool.h>
+#include <float.h>
+#include <stdlib.h>
+#include <math.h>
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
 
 #include "esp_log.h"
@@ -13,6 +17,7 @@
 #include "camera_stream.h"
 #include "ds18b20.h"
 #include "hx711.h"
+#include "mg996r.h"
 #include "turbidity.h"
 #include "websocket_client.h"
 
@@ -20,8 +25,14 @@
 #define HX711_TARE_SAMPLES 20
 #define HX711_WEIGHT_SAMPLES 10
 #define WEBSOCKET_URL_MAX_LENGTH 255
+#define WEBSOCKET_MESSAGE_MAX_LENGTH 512
 #define WEBSOCKET_NVS_NAMESPACE "ws_config"
 #define WEBSOCKET_NVS_KEY "device_ws_url"
+
+typedef struct {
+    int angle;
+    float weight_grams;
+} servo_control_command_t;
 
 static const char *TAG = "AQUANEXIS_WS";
 
@@ -30,7 +41,216 @@ static volatile bool websocket_connected = false;
 static char websocket_url[WEBSOCKET_URL_MAX_LENGTH + 1];
 static char active_websocket_url[WEBSOCKET_URL_MAX_LENGTH + 1];
 static TaskHandle_t temperature_task_handle = NULL;
+static QueueHandle_t servo_command_queue = NULL;
 static bool hx711_available = false;
+static char websocket_message_buffer[WEBSOCKET_MESSAGE_MAX_LENGTH + 1];
+static size_t websocket_message_length;
+static size_t websocket_message_received;
+
+static void reset_websocket_message(void)
+{
+    websocket_message_length = 0;
+    websocket_message_received = 0;
+}
+
+static const char *json_get_field_value(const char *json, const char *key)
+{
+    size_t key_length = strlen(key);
+    size_t depth = 0;
+    const char *cursor = json;
+
+    while (*cursor != '\0') {
+        if (*cursor == '"') {
+            const char *string_start = cursor + 1;
+            const char *string_end = string_start;
+            while (*string_end != '\0') {
+                if (*string_end == '\\') {
+                    if (string_end[1] == '\0') {
+                        return NULL;
+                    }
+                    string_end += 2;
+                } else if (*string_end == '"') {
+                    break;
+                } else {
+                    string_end++;
+                }
+            }
+            if (*string_end != '"') {
+                return NULL;
+            }
+
+            const char *after_string = string_end + 1;
+            while (*after_string == ' ' || *after_string == '\t' ||
+                   *after_string == '\r' || *after_string == '\n') {
+                after_string++;
+            }
+            if (depth == 1 &&
+                (size_t)(string_end - string_start) == key_length &&
+                memcmp(string_start, key, key_length) == 0 &&
+                *after_string == ':') {
+                after_string++;
+                while (*after_string == ' ' || *after_string == '\t' ||
+                       *after_string == '\r' || *after_string == '\n') {
+                    after_string++;
+                }
+                return after_string;
+            }
+
+            cursor = string_end + 1;
+            continue;
+        }
+
+        if (*cursor == '{' || *cursor == '[') {
+            depth++;
+        } else if (*cursor == '}' || *cursor == ']') {
+            if (depth == 0) {
+                return NULL;
+            }
+            depth--;
+        }
+        cursor++;
+    }
+
+    return NULL;
+}
+
+static bool json_get_string_field(
+    const char *json,
+    const char *key,
+    char *value,
+    size_t value_size)
+{
+    const char *cursor = json_get_field_value(json, key);
+    if (cursor == NULL || *cursor != '"' || value_size == 0) {
+        return false;
+    }
+
+    cursor++;
+    size_t length = 0;
+    while (*cursor != '\0' && *cursor != '"') {
+        if (*cursor == '\\' || length + 1 >= value_size) {
+            return false;
+        }
+        value[length++] = *cursor++;
+    }
+    if (*cursor != '"') {
+        return false;
+    }
+
+    value[length] = '\0';
+    return true;
+}
+
+static bool json_get_number_field(
+    const char *json,
+    const char *key,
+    double *value)
+{
+    const char *number_start = json_get_field_value(json, key);
+    if (number_start == NULL) {
+        return false;
+    }
+
+    const char *cursor = number_start;
+    if (*cursor == '-') {
+        cursor++;
+    }
+    if (*cursor == '0') {
+        cursor++;
+    } else {
+        if (*cursor < '1' || *cursor > '9') {
+            return false;
+        }
+        while (*cursor >= '0' && *cursor <= '9') {
+            cursor++;
+        }
+    }
+    if (*cursor == '.') {
+        cursor++;
+        if (*cursor < '0' || *cursor > '9') {
+            return false;
+        }
+        while (*cursor >= '0' && *cursor <= '9') {
+            cursor++;
+        }
+    }
+    if (*cursor == 'e' || *cursor == 'E') {
+        cursor++;
+        if (*cursor == '+' || *cursor == '-') {
+            cursor++;
+        }
+        if (*cursor < '0' || *cursor > '9') {
+            return false;
+        }
+        while (*cursor >= '0' && *cursor <= '9') {
+            cursor++;
+        }
+    }
+
+    const char *number_end = cursor;
+    while (*cursor == ' ' || *cursor == '\t' ||
+           *cursor == '\r' || *cursor == '\n') {
+        cursor++;
+    }
+    if (*cursor != ',' && *cursor != '}') {
+        return false;
+    }
+
+    char *conversion_end;
+    double parsed_value = strtod(number_start, &conversion_end);
+    if (conversion_end != number_end || !isfinite(parsed_value)) {
+        return false;
+    }
+
+    *value = parsed_value;
+    return true;
+}
+
+static void handle_servo_control_message(const char *message)
+{
+    char type[32];
+    if (!json_get_string_field(message, "type", type, sizeof(type))) {
+        ESP_LOGW(TAG, "Ignoring invalid WebSocket JSON command");
+        return;
+    }
+    if (strcmp(type, "servo_control") != 0) {
+        return;
+    }
+
+    char servo_id[32];
+    double angle;
+    double weight_grams;
+    if (!json_get_string_field(
+            message, "servo_id", servo_id, sizeof(servo_id)) ||
+        strcmp(servo_id, "feeder") != 0) {
+        ESP_LOGW(TAG, "Ignoring servo command for unsupported servo_id");
+        return;
+    }
+
+    if (!json_get_number_field(message, "angle", &angle) ||
+        angle < 0 ||
+        angle > 180 ||
+        angle != (double)(int)angle ||
+        !json_get_number_field(message, "weight_grams", &weight_grams) ||
+        weight_grams <= 0 ||
+        weight_grams > (double)FLT_MAX) {
+        ESP_LOGW(TAG, "Ignoring servo command with invalid angle or weight_grams");
+        return;
+    }
+
+    if (servo_command_queue == NULL) {
+        ESP_LOGE(TAG, "Cannot queue servo command: command queue is unavailable");
+        return;
+    }
+
+    servo_control_command_t command = {
+        .angle = (int)angle,
+        .weight_grams = (float)weight_grams,
+    };
+    if (xQueueOverwrite(servo_command_queue, &command) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to queue servo command");
+    }
+}
 
 static esp_err_t validate_websocket_url(const char *url, size_t *url_length)
 {
@@ -255,6 +475,48 @@ static void websocket_event_handler(
                 event->data_len,
                 event->data_ptr
             );
+            if (event->data_ptr == NULL ||
+                event->data_len < 0 ||
+                event->payload_len <= 0 ||
+                event->payload_len > WEBSOCKET_MESSAGE_MAX_LENGTH) {
+                reset_websocket_message();
+                break;
+            }
+
+            if (event->payload_offset == 0) {
+                reset_websocket_message();
+                if (event->op_code != 0x1) {
+                    break;
+                }
+                websocket_message_length = (size_t)event->payload_len;
+            } else if (websocket_message_length == 0 ||
+                       (event->op_code != 0x0 && event->op_code != 0x1)) {
+                reset_websocket_message();
+                break;
+            }
+
+            if (websocket_message_length == 0 ||
+                event->payload_len != (int)websocket_message_length ||
+                event->payload_offset != (int)websocket_message_received ||
+                (size_t)event->data_len >
+                    websocket_message_length - websocket_message_received) {
+                reset_websocket_message();
+                ESP_LOGW(TAG, "Ignoring incomplete or invalid WebSocket message");
+                break;
+            }
+
+            memcpy(
+                websocket_message_buffer + websocket_message_received,
+                event->data_ptr,
+                (size_t)event->data_len
+            );
+            websocket_message_received += (size_t)event->data_len;
+
+            if (websocket_message_received == websocket_message_length) {
+                websocket_message_buffer[websocket_message_length] = '\0';
+                handle_servo_control_message(websocket_message_buffer);
+                reset_websocket_message();
+            }
             break;
 
         default:
@@ -267,20 +529,83 @@ static void websocket_temperature_task(void *arg)
     float temperature;
     float weight_grams;
     turbidity_sample_t turbidity;
+    bool servo_control_active = false;
+    float servo_baseline_weight = 0;
+    float servo_weight_threshold = 0;
 
     while (true) {
+        servo_control_command_t command;
+        bool have_command =
+            servo_command_queue != NULL &&
+            xQueueReceive(servo_command_queue, &command, 0) == pdPASS;
+
+        esp_err_t weight_result = ESP_ERR_INVALID_STATE;
+        if (hx711_available &&
+            (websocket_connected || servo_control_active || have_command)) {
+            weight_result =
+                hx711_read_weight(&weight_grams, HX711_WEIGHT_SAMPLES);
+        }
+
+        if (have_command) {
+            if (weight_result != ESP_OK) {
+                ESP_LOGE(
+                    TAG,
+                    "Cannot apply feeder command without a valid weight reading: %s",
+                    esp_err_to_name(weight_result)
+                );
+            } else {
+                esp_err_t servo_result = mg996r_set_angle(command.angle);
+                if (servo_result != ESP_OK) {
+                    ESP_LOGE(
+                        TAG,
+                        "Failed to set feeder servo angle: %s",
+                        esp_err_to_name(servo_result)
+                    );
+                } else {
+                    servo_baseline_weight = weight_grams;
+                    servo_weight_threshold = command.weight_grams;
+                    servo_control_active = true;
+                    ESP_LOGI(
+                        TAG,
+                        "Feeder servo set to %d degrees; returning to 90 degrees after %.2f g decrease from %.2f g",
+                        command.angle,
+                        servo_weight_threshold,
+                        servo_baseline_weight
+                    );
+                }
+            }
+        }
+
+        if (servo_control_active && weight_result == ESP_OK &&
+            servo_baseline_weight - weight_grams >= servo_weight_threshold) {
+            esp_err_t servo_result = mg996r_set_angle(90);
+            if (servo_result != ESP_OK) {
+                ESP_LOGE(
+                    TAG,
+                    "Failed to return feeder servo to 90 degrees: %s",
+                    esp_err_to_name(servo_result)
+                );
+            } else {
+                servo_control_active = false;
+                ESP_LOGI(
+                    TAG,
+                    "Weight decreased by %.2f g; feeder servo returned to 90 degrees",
+                    servo_baseline_weight - weight_grams
+                );
+            }
+        }
+
+        if (!websocket_connected && servo_control_active &&
+            weight_result != ESP_OK) {
+            ESP_LOGE(TAG, "HX711 read failed during feeder control: %s",
+                     esp_err_to_name(weight_result));
+        }
+
         if (websocket_connected) {
             esp_err_t result =
                 ds18b20_read_temperature(&temperature);
 
             esp_err_t turbidity_result = turbidity_read(&turbidity);
-            esp_err_t weight_result = ESP_ERR_INVALID_STATE;
-            if (hx711_available) {
-                weight_result = hx711_read_weight(
-                    &weight_grams,
-                    HX711_WEIGHT_SAMPLES
-                );
-            }
 
             if (result == ESP_OK && turbidity_result == ESP_OK) {
                 websocket_client_send_turbidity(
@@ -374,6 +699,14 @@ void websocket_client_start(void)
                 "HX711 tare failed; weight will be omitted: %s",
                 esp_err_to_name(sensor_result)
             );
+        }
+    }
+
+    if (servo_command_queue == NULL) {
+        servo_command_queue = xQueueCreate(1, sizeof(servo_control_command_t));
+        if (servo_command_queue == NULL) {
+            ESP_LOGE(TAG, "Failed to create servo command queue");
+            return;
         }
     }
 

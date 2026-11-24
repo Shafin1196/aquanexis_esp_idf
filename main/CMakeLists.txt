@@ -8,6 +8,7 @@ idf_component_register(
         "sensor/ds18b20.c"
         "sensor/turbidity.c"
         "sensor/hx711.c"
+        "servomotor/mg996r.c"
     INCLUDE_DIRS
         "app"
         "wifi"
@@ -15,6 +16,7 @@ idf_component_register(
         "websocket"
         "camera"
         "sensor"
+        "servomotor"
     REQUIRES
         esp_wifi
         esp_event
@@ -23,6 +25,7 @@ idf_component_register(
         bt
         esp_adc
         esp_hosted
+        esp_driver_ledc
         esp_websocket_client
         mbedtls
         esp_driver_gpio

@@ -6,6 +6,7 @@
 #include "nvs_flash.h"
 
 #include "ble_test.h"
+#include "mg996r.h"
 #include "websocket_client.h"
 #include "wifi_station.h"
 
@@ -54,6 +55,10 @@ void app_main(void)
     }
 
     wifi_station_start();
+    esp_err_t servo_result = mg996r_test_start();
+    if (servo_result != ESP_OK) {
+        ESP_LOGE(TAG, "MG996R servo test failed: %s", esp_err_to_name(servo_result));
+    }
 #if CONFIG_BT_ENABLED
     ble_test_start();
 #else
